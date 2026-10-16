@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simnode"
+version = "0.1.0"
+description = "Simulink-style simulator for ROS-like dynamic nodes"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["simnode*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
