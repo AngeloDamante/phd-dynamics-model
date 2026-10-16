@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Union
 
 from .port import PortError, PortSpec
 from .runtime import Inputs, Outputs, Params, State
@@ -12,8 +12,21 @@ from .trigger import OnMessage, Trigger
 StepFn = Callable[[float, Inputs, Outputs, Params, State], None]
 
 
-def _as_specs(ports: Iterable[PortSpec | str]) -> tuple[PortSpec, ...]:
-    specs = tuple(p if isinstance(p, PortSpec) else PortSpec(p) for p in ports)
+#: A port declaration: a spec, a bare name, or a ``{"name", "dtype", "default"}`` mapping.
+PortDecl = Union[PortSpec, str, Mapping[str, Any]]
+
+
+def as_spec(port: PortDecl) -> PortSpec:
+    """Normalize a port declaration to a :class:`PortSpec`."""
+    if isinstance(port, PortSpec):
+        return port
+    if isinstance(port, str):
+        return PortSpec(port)
+    return PortSpec(port["name"], port.get("dtype"), port.get("default"))
+
+
+def _as_specs(ports: Iterable[PortDecl]) -> tuple[PortSpec, ...]:
+    specs = tuple(as_spec(p) for p in ports)
     names = [p.name for p in specs]
     dupes = {n for n in names if names.count(n) > 1}
     if dupes:
@@ -36,8 +49,8 @@ class Node:
 
     Args:
         name: Unique name within the parent system.
-        inputs: Input ports (subscribers); strings are shorthand for
-            untyped ``PortSpec``.
+        inputs: Input ports (subscribers) as ``PortSpec``, bare names, or
+            ``{"name", "dtype", "default"}`` mappings.
         outputs: Output ports (publishers).
         params: Parameters exposed to the callback as ``p``.
         trigger: ``Periodic(sample_time)`` or ``OnMessage(ports)``.
@@ -52,8 +65,8 @@ class Node:
     def __init__(
         self,
         name: str,
-        inputs: Iterable[PortSpec | str] = (),
-        outputs: Iterable[PortSpec | str] = (),
+        inputs: Iterable[PortDecl] = (),
+        outputs: Iterable[PortDecl] = (),
         params: Mapping[str, Any] | None = None,
         trigger: Trigger | None = None,
         step: StepFn | None = None,

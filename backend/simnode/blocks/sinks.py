@@ -8,7 +8,7 @@ from ..registry import register
 
 @register("Scope", "Sinks")
 class Scope(Node):
-    """Live plot of its inputs. Recording is done by the front end."""
+    """Live plot of its inputs (open it with a double-click)."""
 
     def __init__(self, name: str, n_inputs: int = 1) -> None:
         if n_inputs < 1:

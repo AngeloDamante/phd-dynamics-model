@@ -1,0 +1,349 @@
+{
+  "format": "simnode-diagram",
+  "version": 1,
+  "name": "pid_demo",
+  "sim": {
+    "stop_time": 10,
+    "base_step": null,
+    "realtime": false,
+    "speed": 1
+  },
+  "root": {
+    "blocks": [
+      {
+        "id": "ref",
+        "name": "ref",
+        "type": "Step",
+        "x": 60,
+        "y": 100,
+        "params": {
+          "step_time": 0.5,
+          "initial": 0,
+          "final": 1,
+          "sample_time": 0.01
+        },
+        "ports": {
+          "inputs": [],
+          "outputs": [
+            {
+              "name": "y",
+              "dtype": null
+            }
+          ]
+        }
+      },
+      {
+        "id": "pid",
+        "name": "pid",
+        "type": "PythonNode",
+        "x": 220,
+        "y": 110,
+        "params": {
+          "code": "def step(t, inp, out, p, state):\n    # PI controller, runs on a timer like a ROS node with a 100 Hz timer\n    e = inp.ref - inp.y\n    state.i = state.get(\"i\", 0.0) + e * p.Ts\n    u = p.kp * e + p.ki * state.i\n    out.u = max(-p.u_max, min(p.u_max, u))\n",
+          "inputs": [
+            {
+              "name": "ref",
+              "dtype": null
+            },
+            {
+              "name": "y",
+              "dtype": null
+            }
+          ],
+          "outputs": [
+            {
+              "name": "u",
+              "dtype": null
+            }
+          ],
+          "params": {
+            "kp": 6,
+            "ki": 4,
+            "u_max": 10,
+            "Ts": 0.01
+          },
+          "sample_time": 0.01,
+          "trigger_ports": null,
+          "direct_feedthrough": true
+        },
+        "ports": {
+          "inputs": [
+            {
+              "name": "ref",
+              "dtype": null
+            },
+            {
+              "name": "y",
+              "dtype": null
+            }
+          ],
+          "outputs": [
+            {
+              "name": "u",
+              "dtype": null
+            }
+          ]
+        }
+      },
+      {
+        "id": "plant",
+        "name": "plant",
+        "type": "Subsystem",
+        "x": 460,
+        "y": 110,
+        "params": {},
+        "ports": {
+          "inputs": [
+            {
+              "name": "u",
+              "dtype": null
+            }
+          ],
+          "outputs": [
+            {
+              "name": "y",
+              "dtype": null
+            },
+            {
+              "name": "state",
+              "dtype": null
+            }
+          ]
+        },
+        "system": {
+          "blocks": [
+            {
+              "id": "p_in",
+              "name": "u",
+              "type": "Inport",
+              "x": 60,
+              "y": 120,
+              "params": {
+                "dtype": null,
+                "default": null
+              },
+              "ports": {
+                "inputs": [],
+                "outputs": [
+                  {
+                    "name": "y",
+                    "dtype": null
+                  }
+                ]
+              }
+            },
+            {
+              "id": "p_dyn",
+              "name": "dynamics",
+              "type": "PythonNode",
+              "x": 180,
+              "y": 100,
+              "params": {
+                "code": "def step(t, inp, out, p, state):\n    # Mass-spring-damper  m*x'' + c*x' + k*x = u   (semi-implicit Euler)\n    x = state.get(\"x\", 0.0)\n    v = state.get(\"v\", 0.0)\n    out.y = x                      # publish the current position first\n    out.state = {\"x\": x, \"v\": v}\n    u = inp.u if inp.received(\"u\") else 0.0\n    a = (u - p.c * v - p.k * x) / p.m\n    state.v = v + a * p.Ts\n    state.x = x + state.v * p.Ts\n",
+                "inputs": [
+                  {
+                    "name": "u",
+                    "dtype": null
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "y",
+                    "dtype": null
+                  },
+                  {
+                    "name": "state",
+                    "dtype": null
+                  }
+                ],
+                "params": {
+                  "m": 1,
+                  "c": 2,
+                  "k": 2,
+                  "Ts": 0.001
+                },
+                "sample_time": 0.001,
+                "trigger_ports": null,
+                "direct_feedthrough": false
+              },
+              "ports": {
+                "inputs": [
+                  {
+                    "name": "u",
+                    "dtype": null
+                  }
+                ],
+                "outputs": [
+                  {
+                    "name": "y",
+                    "dtype": null
+                  },
+                  {
+                    "name": "state",
+                    "dtype": null
+                  }
+                ]
+              }
+            },
+            {
+              "id": "p_out",
+              "name": "y",
+              "type": "Outport",
+              "x": 420,
+              "y": 100,
+              "params": {
+                "dtype": null,
+                "default": null
+              },
+              "ports": {
+                "inputs": [
+                  {
+                    "name": "u",
+                    "dtype": null
+                  }
+                ],
+                "outputs": []
+              }
+            },
+            {
+              "id": "p_out2",
+              "name": "state",
+              "type": "Outport",
+              "x": 420,
+              "y": 160,
+              "params": {
+                "dtype": null,
+                "default": null
+              },
+              "ports": {
+                "inputs": [
+                  {
+                    "name": "u",
+                    "dtype": null
+                  }
+                ],
+                "outputs": []
+              }
+            }
+          ],
+          "wires": [
+            {
+              "id": "pw1",
+              "src": {
+                "block": "p_in",
+                "port": "y"
+              },
+              "dst": {
+                "block": "p_dyn",
+                "port": "u"
+              }
+            },
+            {
+              "id": "pw2",
+              "src": {
+                "block": "p_dyn",
+                "port": "y"
+              },
+              "dst": {
+                "block": "p_out",
+                "port": "u"
+              }
+            },
+            {
+              "id": "pw3",
+              "src": {
+                "block": "p_dyn",
+                "port": "state"
+              },
+              "dst": {
+                "block": "p_out2",
+                "port": "u"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "id": "scope",
+        "name": "scope",
+        "type": "Scope",
+        "x": 720,
+        "y": 60,
+        "params": {
+          "n_inputs": 2
+        },
+        "ports": {
+          "inputs": [
+            {
+              "name": "in1",
+              "dtype": null
+            },
+            {
+              "name": "in2",
+              "dtype": null
+            }
+          ],
+          "outputs": []
+        }
+      }
+    ],
+    "wires": [
+      {
+        "id": "w1",
+        "src": {
+          "block": "ref",
+          "port": "y"
+        },
+        "dst": {
+          "block": "pid",
+          "port": "ref"
+        }
+      },
+      {
+        "id": "w2",
+        "src": {
+          "block": "pid",
+          "port": "u"
+        },
+        "dst": {
+          "block": "plant",
+          "port": "u"
+        },
+        "monitor": true
+      },
+      {
+        "id": "w3",
+        "src": {
+          "block": "plant",
+          "port": "y"
+        },
+        "dst": {
+          "block": "pid",
+          "port": "y"
+        }
+      },
+      {
+        "id": "w4",
+        "src": {
+          "block": "ref",
+          "port": "y"
+        },
+        "dst": {
+          "block": "scope",
+          "port": "in1"
+        }
+      },
+      {
+        "id": "w5",
+        "src": {
+          "block": "plant",
+          "port": "y"
+        },
+        "dst": {
+          "block": "scope",
+          "port": "in2"
+        }
+      }
+    ]
+  }
+}

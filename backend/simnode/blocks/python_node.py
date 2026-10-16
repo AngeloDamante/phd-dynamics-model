@@ -4,13 +4,18 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from ..core import Node, OnMessage, Periodic, PortSpec, compile_step
+from ..core import Node, OnMessage, Periodic, compile_step
+from ..core.node import PortDecl
 from ..registry import register
 
 DEFAULT_CODE = '''\
 def step(t, inp, out, p, state):
-    """Read inp.<port>, write out.<port>; p = params, state = persistent dict."""
-    pass
+    # inp.<name>        latest value on an input (port default until the first message)
+    # inp.fresh(name)   True if a new message arrived since the last call
+    # out.<name> = v    publish v on an output
+    # p.<name>          parameters (read-only)
+    # state             dict kept between calls, e.g. state.x = state.get("x", 0.0)
+    out.y = inp.u
 '''
 
 
@@ -21,7 +26,7 @@ class PythonNode(Node):
     Args:
         name: Node name.
         code: Source defining ``step(t, inp, out, p, state)``.
-        inputs / outputs: Port names or ``PortSpec`` objects.
+        inputs / outputs: Port declarations (see :data:`~simnode.core.node.PortDecl`).
         params: Parameters available as ``p``.
         sample_time: If given, fire periodically; otherwise fire on message.
         trigger_ports: For on-message nodes, inputs that trigger the
@@ -30,8 +35,8 @@ class PythonNode(Node):
     """
 
     def __init__(self, name: str, code: str = DEFAULT_CODE,
-                 inputs: Iterable[PortSpec | str] = (),
-                 outputs: Iterable[PortSpec | str] = (),
+                 inputs: Iterable[PortDecl] = ("u",),
+                 outputs: Iterable[PortDecl] = ("y",),
                  params: Mapping[str, Any] | None = None,
                  sample_time: float | None = None,
                  trigger_ports: Iterable[str] | None = None,

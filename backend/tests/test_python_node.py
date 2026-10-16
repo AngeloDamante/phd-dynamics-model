@@ -59,3 +59,15 @@ def test_closed_loop_pi_tracks_step():
     _, y = rec.series("plant", "y")
     assert y[0] == 0.0
     assert y[-1] == pytest.approx(1.0, abs=1e-3)
+
+
+def test_traceback_shows_only_user_frames():
+    from simnode.core import CallbackError
+    code = "def helper():\n    return 1 / 0\n\ndef step(t, inp, out, p, state):\n    helper()\n"
+    s = System()
+    s.add(PythonNode("n", code, inputs=[], outputs=[], sample_time=0.1))
+    with pytest.raises(CallbackError) as err:
+        Simulation(s).step()
+    tb = err.value.traceback
+    assert 'File "<n>", line 5, in step' in tb and 'line 2, in helper' in tb
+    assert "scheduler.py" not in tb

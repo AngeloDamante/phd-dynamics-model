@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -25,6 +26,20 @@ class BlockType:
     factory: Callable[..., Node]
     category: str
     description: str
+
+    def default_params(self) -> dict[str, Any]:
+        """Constructor parameters (except ``name``) with their defaults.
+
+        Tuples are returned as lists so the result is JSON-friendly;
+        parameters without a default map to None.
+        """
+        params: dict[str, Any] = {}
+        for pname, param in inspect.signature(self.factory).parameters.items():
+            if pname == "name" or param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                continue
+            default = None if param.default is param.empty else param.default
+            params[pname] = list(default) if isinstance(default, tuple) else default
+        return params
 
 
 def register(type_name: str, category: str) -> Callable[[type], type]:

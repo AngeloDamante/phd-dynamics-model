@@ -41,7 +41,12 @@ class CallbackError(RuntimeError):
         self.path = path
         self.t = t
         self.original = original
-        self.traceback = "".join(traceback.format_exception(original))
+        tb = traceback.TracebackException.from_exception(original)
+        # Show only user-code frames (compiled as "<node>") when there are any.
+        user = [f for f in tb.stack if f.filename.startswith("<")]
+        if user:
+            tb.stack = traceback.StackSummary.from_list(user)
+        self.traceback = "".join(tb.format())
         super().__init__(f"{path} at t={t:g}: {type(original).__name__}: {original}")
 
 
@@ -69,7 +74,7 @@ def execution_order(graph: FlatGraph) -> list[str]:
         if dst in deps and src in deps and src != dst:
             deps[dst].add(src)
         elif dst == src and dst in deps:
-            raise AlgebraicLoopError(f"algebraic loop: {dst} feeds itself")
+            raise AlgebraicLoopError(f"algebraic loop: {dst} feeds itself", [dst])
     order: list[str] = []
     ready = sorted((p for p, d in deps.items() if not d), key=rank.__getitem__)
     while ready:
@@ -83,7 +88,8 @@ def execution_order(graph: FlatGraph) -> list[str]:
         ready.sort(key=rank.__getitem__)
         deps.pop(p)
     if deps:
-        raise AlgebraicLoopError(f"algebraic loop among: {', '.join(sorted(deps))}")
+        raise AlgebraicLoopError(f"algebraic loop among: {', '.join(sorted(deps))}",
+                                 sorted(deps))
     return early + order
 
 

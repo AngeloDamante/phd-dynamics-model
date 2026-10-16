@@ -50,17 +50,35 @@ def step(t, inp, out, p, state):
 ## Architecture
 
 - `backend/simnode/core/` — GUI-agnostic engine, zero web/GUI imports:
-  ports, node, system/subsystem (flattening), scheduler.
+  ports, node, system/subsystem (flattening), scheduler, recorder,
+  `compile_step` for callback source.
 - `backend/simnode/blocks/` — standard library (Constant, Step, Sine, Gain,
-  Sum, UnitDelay, Scope, Inport, Outport, ...), registered via `registry.py`.
-- `backend/simnode/io/` — diagram (de)serialization, versioned JSON schema.
-- `backend/simnode/api/` — FastAPI: REST for diagram editing, WebSocket for
-  sim control + data streaming. User callbacks execute in a separate
-  worker process so crashes/infinite loops don't kill the server.
+  Sum, UnitDelay, Scope, Inport, Outport, Subsystem, PythonNode), registered
+  via `registry.py` (palette params come from constructor signatures).
+- `backend/simnode/io/diagram.py` — versioned JSON diagram format
+  (`format`/`version`, `MIGRATIONS`), `build_system()`.
+- `backend/simnode/runner.py` — `SimProcess`: runs a diagram in a spawned
+  worker process; command/event protocol documented in the module docstring.
+- `backend/simnode/codecheck.py` — AST-only callback check (never executes).
+- `backend/simnode/api/` — FastAPI: REST (blocks, ports, code check,
+  diagrams CRUD) + WebSocket `/api/sim`; serves `frontend/dist` at `/`.
+  Run: `python -m simnode.api --diagrams diagrams`.
 - `backend/tests/` — pytest, headless.
-- `frontend/` — TypeScript + Vite + JointJS (orthogonal/manhattan routing,
-  `jumpover` connector for line hops at wire crossings), Monaco editor for
-  callbacks, uPlot for scopes.
+- `frontend/` — TypeScript + Vite. `model.ts` (diagram doc + pure helpers:
+  grouping, port refresh), `canvas/` (JointJS editor: manhattan routing,
+  `jumpover` hops, one approach column per input port), `ui/` (inspector,
+  Monaco code editor loaded lazily, uPlot scopes / Data Inspector, log),
+  `sim.ts` (WebSocket client + signal store). The DiagramDoc is the source
+  of truth; the JointJS graph only shows the current subsystem level.
+
+### Frontend gotchas
+
+- Monaco is imported from `editor/editor.api` (bare core); every editor
+  feature must be imported explicitly in `ui/codeEditor.ts`. The suggest
+  widget lives in `editor/contrib/suggest/browser/suggestController`, not in
+  `features/suggest/register`.
+- Endpoint keys are `"a/b/block.port"` (names, not ids); the runner maps any
+  endpoint (incl. Inport/Subsystem ports) to its leaf via `aliases`.
 
 ## Decisions (settled 2026-10-16)
 
@@ -68,8 +86,9 @@ def step(t, inp, out, p, state):
 - Discrete-time only for now; plants are integrated inside callbacks
   (Euler/RK4 with `dt`). Continuous blocks/ODE solver maybe later.
 - Dynamic payloads with optional port types.
-- Simulated pub/sub only. ROS2 bridge / rclpy node generation later, behind
-  an isolated interface.
+- ROS is the mental model only (nodes, topics, timer vs subscriber
+  callbacks, periodicity). Generating real rclpy nodes is out of scope
+  (Angelo, 2026-10-16); no ROS bridge planned either — simulated pub/sub only.
 
 ## Environment notes
 

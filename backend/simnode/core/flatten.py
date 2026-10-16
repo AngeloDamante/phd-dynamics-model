@@ -17,7 +17,15 @@ PortRef = tuple[str, str]
 
 
 class AlgebraicLoopError(RuntimeError):
-    """Raised when a feedback loop has no delay to break it."""
+    """Raised when a feedback loop has no delay to break it.
+
+    Attributes:
+        paths: Node paths involved in the loop.
+    """
+
+    def __init__(self, message: str, paths: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.paths = paths or []
 
 
 @dataclass
@@ -31,6 +39,38 @@ class FlatGraph:
 
     leaves: dict[str, Node] = field(default_factory=dict)
     drivers: dict[PortRef, PortRef] = field(default_factory=dict)
+    nodes: dict[str, Node] = field(default_factory=dict, repr=False)
+    wiring: dict[PortRef, PortRef] = field(default_factory=dict, repr=False)
+
+    def resolve_output(self, path: str, port: str) -> PortRef | None:
+        """Resolve any output endpoint (leaf, ``Inport`` or ``Subsystem``) to
+        the leaf output that drives it, or None if nothing does."""
+        return self._resolve((path, port), frozenset())
+
+    def output_aliases(self) -> dict[PortRef, PortRef]:
+        """Map every output endpoint at every level to its driving leaf output."""
+        aliases: dict[PortRef, PortRef] = {}
+        for path, node in self.nodes.items():
+            for spec in node.outputs:
+                leaf = self.resolve_output(path, spec.name)
+                if leaf is not None:
+                    aliases[(path, spec.name)] = leaf
+        return aliases
+
+    def _resolve(self, src: PortRef, seen: frozenset[PortRef]) -> PortRef | None:
+        if src in seen:
+            raise AlgebraicLoopError(
+                f"wire loop through subsystem boundary at {src[0]}.{src[1]}", [src[0]])
+        path, port = src
+        node = self.nodes[path]
+        if isinstance(node, Subsystem):
+            upstream = self.wiring.get((f"{path}/{port}", "u"))
+        elif isinstance(node, Inport):
+            parent = path.rpartition("/")[0]
+            upstream = self.wiring.get((parent, node.name)) if parent else None
+        else:
+            return src
+        return self._resolve(upstream, seen | {src}) if upstream else None
 
     def subscribers(self) -> dict[PortRef, list[PortRef]]:
         """Invert ``drivers``: leaf output -> leaf inputs it feeds."""
@@ -42,39 +82,23 @@ class FlatGraph:
 
 def flatten(system: System) -> FlatGraph:
     """Flatten ``system`` and all nested subsystems."""
-    nodes: dict[str, Node] = {}
-    raw: dict[PortRef, PortRef] = {}
     graph = FlatGraph()
 
     def walk(sys: System, prefix: str) -> None:
         for node in sys:
             path = prefix + node.name
-            nodes[path] = node
+            graph.nodes[path] = node
             if isinstance(node, Subsystem):
                 walk(node.system, path + "/")
             elif not isinstance(node, (Inport, Outport)):
                 graph.leaves[path] = node
         for w in sys.wires:
-            raw[(prefix + w.dst.node, w.dst.port)] = (prefix + w.src.node, w.src.port)
-
-    def resolve(src: PortRef, seen: frozenset[PortRef]) -> PortRef | None:
-        if src in seen:
-            raise AlgebraicLoopError(f"wire loop through subsystem boundary at {src[0]}.{src[1]}")
-        path, port = src
-        node = nodes[path]
-        if isinstance(node, Subsystem):
-            upstream = raw.get((f"{path}/{port}", "u"))
-        elif isinstance(node, Inport):
-            parent = path.rpartition("/")[0]
-            upstream = raw.get((parent, node.name)) if parent else None
-        else:
-            return src
-        return resolve(upstream, seen | {src}) if upstream else None
+            graph.wiring[(prefix + w.dst.node, w.dst.port)] = (prefix + w.src.node, w.src.port)
 
     walk(system, "")
-    for dst, src in raw.items():
+    for dst, src in graph.wiring.items():
         if dst[0] in graph.leaves:
-            leaf_src = resolve(src, frozenset())
+            leaf_src = graph.resolve_output(*src)
             if leaf_src is not None:
                 graph.drivers[dst] = leaf_src
     return graph
