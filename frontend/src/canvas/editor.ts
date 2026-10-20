@@ -10,7 +10,10 @@ import {
   type BlockDoc, type DiagramDoc, type SystemDoc, type WireDoc, clone, groupIntoSubsystem,
   newId, refreshSubsystems, resolvePath, subsystemPorts, uniqueName,
 } from '../model';
-import { CONNECTOR, ERROR_COLOR, ROUTER, SELECT_COLOR, cellNamespace, makeLink, renderBlock, routerFor } from './shapes';
+import {
+  CONNECTOR, ERROR_COLOR, ROUTER, SELECT_COLOR, WireView, cellNamespace, frozenRouter, makeLink, renderBlock,
+  routerFor,
+} from './shapes';
 
 const PAPER_W = 4000;
 const PAPER_H = 3000;
@@ -64,6 +67,7 @@ export class Editor {
       drawGrid: { name: 'dot', args: { color: '#c3c2b7' } },
       background: { color: '#fcfcfb' },
       cellViewNamespace: cellNamespace,
+      linkView: WireView,
       async: true,
       sorting: dia.Paper.sorting.APPROX,
       defaultLink: () => makeLink(),
@@ -74,7 +78,7 @@ export class Editor {
       snapLinks: { radius: 25 },
       markAvailable: true,
       clickThreshold: 4,
-      interactive: (view) => (view.model.isLink() ? { linkMove: false, labelMove: false } : true),
+      interactive: (view) => (view.model.isLink() ? { linkMove: true, labelMove: false } : true),
       validateMagnet: (view, magnet) => portOf(view, magnet)?.startsWith('out:') ?? false,
       validateConnection: (sv, sm, tv, tm, _end, lv) => this.canConnect(sv, sm, tv, tm, lv),
     });
@@ -145,9 +149,14 @@ export class Editor {
       source: { id: w.src.block, port: `out:${w.src.port}` },
       target: { id: w.dst.block, port: `in:${w.dst.port}` },
       vertices: w.vertices ?? [],
-      router: this.routerTo(w.dst.block, w.dst.port),
+      router: this.routerFor(w),
     });
     return link;
+  }
+
+  /** Edited wires keep their vertices; the others are auto-routed. */
+  private routerFor(w: WireDoc) {
+    return w.vertices?.length ? (frozenRouter as any) : this.routerTo(w.dst.block, w.dst.port);
   }
 
   private routerTo(blockId: string, port: string) {
@@ -178,7 +187,9 @@ export class Editor {
     });
     this.graph.on('change:vertices', (link: dia.Link) => {
       const w = this.system.wires.find((x) => x.id === link.id);
-      if (w && !this.rendering) w.vertices = link.vertices().map((v) => ({ x: v.x, y: v.y }));
+      if (!w || this.rendering) return;
+      w.vertices = link.vertices().map((v) => ({ x: v.x, y: v.y }));
+      link.router(this.routerFor(w));
     });
     this.graph.on('remove', (cell: dia.Cell) => {
       if (this.rendering) return;
@@ -212,7 +223,7 @@ export class Editor {
     };
     if (idx >= 0) sys.wires[idx] = wire;
     else sys.wires.push(wire);
-    link.router(this.routerTo(wire.dst.block, wire.dst.port));
+    link.router(this.routerFor(wire));
     this.on.changed();
   }
 
@@ -343,14 +354,95 @@ export class Editor {
     this.scroller.addEventListener('wheel', (e) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
-      this.setZoom(this.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1));
+      this.setZoom(this.zoom * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e);
     }, { passive: false });
+    p.on('render:done', () => this.drawJunctions());
+    this.bindPan();
   }
 
-  setZoom(z: number): void {
+  /**
+   * Pan by dragging with the middle button, or with the left button while
+   * Space is held. Runs in the capture phase so the paper never sees it.
+   */
+  private bindPan(): void {
+    const sc = this.scroller;
+    let space = false;
+    let pan: { x: number; y: number } | null = null;
+    const typing = (e: Event) => !!(e.target as HTMLElement).closest?.('input, textarea, select, .monaco-editor, .modal');
+    document.addEventListener('keydown', (e) => {
+      if (e.code !== 'Space' || typing(e)) return;
+      e.preventDefault();
+      space = true;
+      sc.classList.add('pan-ready');
+    });
+    document.addEventListener('keyup', (e) => {
+      if (e.code !== 'Space') return;
+      space = false;
+      sc.classList.remove('pan-ready');
+    });
+    sc.addEventListener('mousedown', (e) => {
+      if (!(e.button === 1 || (e.button === 0 && space))) return;
+      e.preventDefault();
+      e.stopPropagation();
+      pan = { x: e.clientX, y: e.clientY };
+      sc.classList.add('panning');
+    }, { capture: true });
+    window.addEventListener('mousemove', (e) => {
+      if (!pan) return;
+      sc.scrollLeft -= e.clientX - pan.x;
+      sc.scrollTop -= e.clientY - pan.y;
+      pan = { x: e.clientX, y: e.clientY };
+    });
+    window.addEventListener('mouseup', () => {
+      if (!pan) return;
+      pan = null;
+      sc.classList.remove('panning');
+    });
+  }
+
+  /** Zoom, keeping the point under `at` (a mouse event) fixed on screen. */
+  setZoom(z: number, at?: { clientX: number; clientY: number }): void {
+    const sc = this.scroller;
+    const box = sc.getBoundingClientRect();
+    const mx = at ? at.clientX - box.left : sc.clientWidth / 2;
+    const my = at ? at.clientY - box.top : sc.clientHeight / 2;
+    const lx = (sc.scrollLeft + mx) / this.zoom;
+    const ly = (sc.scrollTop + my) / this.zoom;
     this.zoom = Math.min(3, Math.max(0.3, z));
     this.paper.scale(this.zoom, this.zoom);
     this.paper.setDimensions(PAPER_W * this.zoom, PAPER_H * this.zoom);
+    sc.scrollLeft = lx * this.zoom - mx;
+    sc.scrollTop = ly * this.zoom - my;
+  }
+
+  /**
+   * Draw a dot wherever wires from the same output split (Simulink-style
+   * branch points): a point of the union of their paths with degree >= 3.
+   */
+  private drawJunctions(): void {
+    const layer = this.paper.getLayerNode(dia.Paper.Layers.FRONT);
+    layer.querySelectorAll('.junction').forEach((n) => n.remove());
+    const groups = new Map<string, dia.Point[][]>();
+    for (const link of this.graph.getLinks()) {
+      const s = link.source();
+      if (!s.id || !link.target().id) continue;
+      const view = this.paper.findViewByModel(link) as dia.LinkView | undefined;
+      if (!view?.sourcePoint || !view.targetPoint) continue;
+      const key = `${s.id}|${s.port}`;
+      const path = [view.sourcePoint, ...view.route, view.targetPoint].map((q) => ({ x: q.x, y: q.y }));
+      groups.set(key, [...(groups.get(key) ?? []), path]);
+    }
+    for (const paths of groups.values()) {
+      if (paths.length < 2) continue;
+      for (const pt of branchPoints(paths)) {
+        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        c.setAttribute('class', 'junction');
+        c.setAttribute('cx', String(pt.x));
+        c.setAttribute('cy', String(pt.y));
+        c.setAttribute('r', '3.5');
+        layer.appendChild(c);
+      }
+    }
   }
 
   /** Local paper coordinates of a client (mouse) position. */
@@ -374,7 +466,7 @@ export class Editor {
     if (id) {
       const view = this.paper.findViewByModel(id) as dia.LinkView | undefined;
       view?.addTools(new dia.ToolsView({
-        tools: [new linkTools.Vertices({ snapRadius: 10 }), new linkTools.TargetArrowhead()],
+        tools: [new linkTools.TargetArrowhead()],
       }));
     }
   }
@@ -606,4 +698,38 @@ function portOf(view: dia.CellView, magnet: SVGElement): string | null {
 
 function rect(x1: number, y1: number, x2: number, y2: number) {
   return { x: Math.min(x1, x2), y: Math.min(y1, y2), width: Math.abs(x2 - x1), height: Math.abs(y2 - y1) };
+}
+
+/**
+ * Branch points of a set of orthogonal polylines sharing their first point:
+ * split every segment at every vertex lying on it, then return the points
+ * (other than the shared start) where three or more distinct segments meet.
+ */
+export function branchPoints(paths: dia.Point[][]): dia.Point[] {
+  const key = (p: dia.Point) => `${Math.round(p.x)},${Math.round(p.y)}`;
+  const all = paths.flat();
+  const edges = new Set<string>();
+  const onSeg = (p: dia.Point, a: dia.Point, b: dia.Point) =>
+    (Math.abs(a.x - b.x) < 0.5 && Math.abs(p.x - a.x) < 0.5 && p.y > Math.min(a.y, b.y) && p.y < Math.max(a.y, b.y))
+    || (Math.abs(a.y - b.y) < 0.5 && Math.abs(p.y - a.y) < 0.5 && p.x > Math.min(a.x, b.x) && p.x < Math.max(a.x, b.x));
+  for (const path of paths) {
+    for (let i = 0; i < path.length - 1; i++) {
+      const a = path[i];
+      const b = path[i + 1];
+      const horizontal = Math.abs(a.y - b.y) < 0.5;
+      const cuts = [a, b, ...all.filter((p) => onSeg(p, a, b))]
+        .sort((p, q) => (horizontal ? p.x - q.x : p.y - q.y));
+      for (let j = 0; j < cuts.length - 1; j++) {
+        const [u, v] = [key(cuts[j]), key(cuts[j + 1])].sort();
+        if (u !== v) edges.add(`${u}|${v}`);
+      }
+    }
+  }
+  const degree = new Map<string, number>();
+  for (const e of edges) for (const n of e.split('|')) degree.set(n, (degree.get(n) ?? 0) + 1);
+  const start = key(paths[0][0]);
+  return [...degree].filter(([n, d]) => d >= 3 && n !== start).map(([n]) => {
+    const [x, y] = n.split(',').map(Number);
+    return { x, y };
+  });
 }

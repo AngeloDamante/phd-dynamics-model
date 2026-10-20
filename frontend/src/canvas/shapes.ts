@@ -1,5 +1,5 @@
 // JointJS shapes: Simulink-like blocks and orthogonal wires with line hops.
-import { dia, shapes } from '@joint/core';
+import { dia, g, shapes } from '@joint/core';
 import type { BlockDoc } from '../model';
 
 const INK = '#1f1f1f';
@@ -32,6 +32,8 @@ const portGroup = (side: 'left' | 'right', magnet: boolean | 'passive'): dia.Ele
 export const Block = dia.Element.define(
   'sim.Block',
   {
+    // Blocks sit above wires so an already-wired output port stays grabbable.
+    z: 2,
     size: { width: 90, height: 50 },
     attrs: {
       body: {
@@ -90,6 +92,7 @@ export const CONNECTOR = { name: 'jumpover' as const, args: { size: 5, jump: 'ar
 
 export function makeLink(): dia.Link {
   return new shapes.standard.Link({
+    z: 1,
     router: ROUTER,
     connector: CONNECTOR,
     attrs: {
@@ -176,5 +179,141 @@ export function renderBlock(el: dia.Element, b: BlockDoc, siblings: BlockDoc[]):
   if (current.join() !== order.join()) {
     el.removePorts(el.getPorts());
     el.addPorts(ports);
+  }
+}
+
+// ------------------------------------------------------------ wire editing
+
+type Pt = { x: number; y: number };
+
+const STUB = 10;
+const snap = (v: number) => Math.round(v / 10) * 10;
+const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
+
+/**
+ * Router for a wire whose route the user has edited: goes through the
+ * stored vertices, adding an elbow wherever two consecutive points are not
+ * aligned (e.g. after a block moved). The first leg leaves the source
+ * horizontally and the last one enters the target horizontally.
+ */
+export function frozenRouter(vertices: dia.Point[], _args: unknown, view: dia.LinkView): g.Point[] {
+  const pts: Pt[] = [view.sourceAnchor, ...vertices, view.targetAnchor];
+  const out: Pt[] = [];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    if (!near(a.x, b.x) && !near(a.y, b.y)) {
+      out.push(i === pts.length - 1 ? { x: a.x, y: b.y } : { x: b.x, y: a.y });
+    }
+    if (i < pts.length - 1) out.push(b);
+  }
+  return out.map((p) => new g.Point(p.x, p.y));
+}
+
+/** Drop duplicate and collinear points, keeping the anchors `pts[0]`/`pts[n-1]`. */
+export function simplify(pts: Pt[]): Pt[] {
+  const res: Pt[] = [];
+  for (const p of pts) {
+    const last = res[res.length - 1];
+    if (last && near(last.x, p.x) && near(last.y, p.y)) continue;
+    const prev = res[res.length - 2];
+    if (prev && last && ((near(prev.x, last.x) && near(last.x, p.x))
+        || (near(prev.y, last.y) && near(last.y, p.y)))) res.pop();
+    res.push(p);
+  }
+  return res;
+}
+
+function segmentDistance(p: Pt, a: Pt, b: Pt): number {
+  return new g.Line(new g.Point(a), new g.Point(b)).closestPoint(new g.Point(p)).distance(new g.Point(p));
+}
+
+/**
+ * Link view with Simulink-style editing:
+ * - drag a segment to move it perpendicular to itself (the route is then
+ *   frozen into vertices, see `frozenRouter`);
+ * - Ctrl+drag starts a branch: a new wire from the same output port.
+ */
+export class WireView extends dia.LinkView {
+  protected dragStart(evt: dia.Event, x: number, y: number): void {
+    if (this.isDefaultInteractionPrevented(evt) || !this.can('linkMove')) return;
+    if (evt.ctrlKey || evt.metaKey) {
+      this.branchStart(evt, x, y);
+      return;
+    }
+    const pts: Pt[] = [this.sourcePoint, ...this.route, this.targetPoint].map((p) => ({ x: p.x, y: p.y }));
+    let seg = -1;
+    let best = Infinity;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const d = segmentDistance({ x, y }, pts[i], pts[i + 1]);
+      if (d < best) { best = d; seg = i; }
+    }
+    if (seg < 0) return;
+    const a = pts[seg];
+    const b = pts[seg + 1];
+    const horizontal = near(a.y, b.y);
+    const verts = pts.slice(1, -1);
+    // A segment attached to a port can't move as a whole: keep a short stub
+    // at the port and add a jog (two coincident points) after it.
+    const stub = (from: Pt, to: Pt): Pt => {
+      const len = Math.min(STUB, Math.hypot(to.x - from.x, to.y - from.y) / 2);
+      return horizontal
+        ? { x: from.x + Math.sign(to.x - from.x) * len, y: from.y }
+        : { x: from.x, y: from.y + Math.sign(to.y - from.y) * len };
+    };
+    if (seg === pts.length - 2) {
+      const c = stub(b, a);
+      verts.push(c, { ...c });
+    }
+    if (seg === 0) {
+      const c = stub(a, b);
+      verts.unshift(c, { ...c });
+      seg += 2;
+    }
+    this.paper!.setDragging(evt);
+    // `seg` indexes [source, ...verts, target]; it moves verts[seg-1], verts[seg].
+    this.eventData(evt, { action: 'move', verts, seg, horizontal, x0: x, y0: y, moved: false });
+  }
+
+  protected drag(evt: dia.Event, x: number, y: number): void {
+    const d = this.eventData(evt);
+    const verts: Pt[] = d.verts.map((p: Pt) => ({ ...p }));
+    const [p, q] = [verts[d.seg - 1], verts[d.seg]];
+    if (d.horizontal) p.y = q.y = snap(p.y + y - d.y0);
+    else p.x = q.x = snap(p.x + x - d.x0);
+    if (!d.moved) {
+      this.model.router(frozenRouter as any);
+      this.eventData(evt, { moved: true });
+    }
+    this.model.vertices(verts, { ui: true });
+  }
+
+  protected dragEnd(evt: dia.Event): void {
+    if (!this.eventData(evt).moved) return;
+    const pts = simplify([this.sourceAnchor, ...this.model.vertices(), this.targetAnchor]);
+    this.model.vertices(pts.slice(1, -1).map((p) => ({ x: p.x, y: p.y })), { ui: true });
+  }
+
+  private branchStart(evt: dia.Event, x: number, y: number): void {
+    const link = makeLink();
+    link.source(this.model.source());
+    link.target({ x, y });
+    this.paper!.model.addCell(link);
+    const view = this.paper!.requireView<dia.LinkView>(link);
+    view.eventData(evt, view.startArrowheadMove('target', { whenNotAllowed: 'remove' }) as any);
+    this.paper!.setDragging(evt);
+    this.eventData(evt, { action: 'branch', branch: view });
+  }
+
+  pointermove(evt: dia.Event, x: number, y: number): void {
+    const { action, branch } = this.eventData(evt);
+    if (action === 'branch') branch.pointermove(evt, x, y);
+    else super.pointermove(evt, x, y);
+  }
+
+  pointerup(evt: dia.Event, x: number, y: number): void {
+    const { action, branch } = this.eventData(evt);
+    if (action === 'branch') branch.pointerup(evt, x, y);
+    super.pointerup(evt, x, y);
   }
 }

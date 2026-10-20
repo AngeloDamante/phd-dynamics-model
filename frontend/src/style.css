@@ -119,6 +119,9 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); ou
 #breadcrumb span { color: var(--muted); }
 #canvas-scroll { flex: 1; overflow: auto; position: relative; background: var(--surface); }
 #paper { position: relative; }
+#canvas-scroll.pan-ready, #canvas-scroll.pan-ready * { cursor: grab !important; }
+#canvas-scroll.panning, #canvas-scroll.panning * { cursor: grabbing !important; }
+.junction { fill: #1f1f1f; pointer-events: none; }
 .rubber-band {
   position: absolute;
   border: 1px dashed var(--accent);
